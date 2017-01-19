@@ -1,0 +1,26 @@
+version: '2'
+services:
+  app:
+    depends_on:
+      - kafka
+    links:
+      - kafka
+    build:
+      context: ./dev-docker/app
+    volumes:
+      - ".:/go/src/github.com/roblaszczak/simple-kafka"
+
+  kafka:
+    build:
+      context: ./dev-docker/kafka
+    restart: always
+    depends_on:
+      - zookeeper
+    links:
+      - zookeeper
+    environment:
+      ZOOKEEPER_IP: zookeeper
+
+  zookeeper:
+    image: jplock/zookeeper:3.4.6
+    restart: always
