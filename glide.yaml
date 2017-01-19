@@ -1,0 +1,10 @@
+package: github.com/roblaszczak/simple-kafka
+import:
+- package: github.com/Shopify/sarama
+  version: ^1.11.0
+testImport:
+- package: github.com/davecgh/go-spew
+  version: ^1.1.0
+  subpackages:
+  - spew
+- package: github.com/nu7hatch/gouuid
