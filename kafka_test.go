@@ -10,6 +10,10 @@ import (
 	"testing"
 )
 
+const (
+	MinimalKafkaPartitionsCount = 2
+)
+
 func TestClient_Consume(t *testing.T) {
 	client, err := createClient()
 	if err != nil {
@@ -20,12 +24,22 @@ func TestClient_Consume(t *testing.T) {
 
 	messagesCount := 1000
 	producedMessages := generateRandomMessages(messagesCount, topicName)
+	partitions := map[int32]struct{}{}
 
 	for _, message := range producedMessages {
-		_, _, err := client.SyncProduce(message)
+		partition, _, err := client.SyncProduce(message)
 		if err != nil {
 			t.Error("error during adding test message", err)
 		}
+		partitions[partition] = struct{}{}
+	}
+
+	if len(partitions) < MinimalKafkaPartitionsCount {
+		t.Errorf(
+			"it must be at least %d partitions configured in Kafka to run test (%d used)",
+			MinimalKafkaPartitionsCount,
+			len(partitions),
+		)
 	}
 
 	consumedMessagesCh, err := client.Consume(topicName)
