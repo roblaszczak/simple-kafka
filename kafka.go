@@ -2,6 +2,12 @@ package kafka
 
 import (
 	"github.com/Shopify/sarama"
+	"io/ioutil"
+	"log"
+)
+
+var (
+	Logger = log.New(ioutil.Discard, "[simple-kafka] ", log.LstdFlags)
 )
 
 // Message represents message received from Kafka
@@ -20,6 +26,7 @@ type Client interface {
 
 // NewClient creates new Client.
 func NewClient(brokers []string) (Client, error) {
+	sarama.Logger = Logger
 	return &client{brokers: brokers}, nil
 }
 
@@ -29,11 +36,16 @@ type client struct {
 	saramaSyncProducer sarama.SyncProducer
 }
 
+func (c client) saramaConfig() (*sarama.Config) {
+	config := sarama.NewConfig()
+	return config
+}
+
 func (c *client) consumer() (sarama.Consumer, error) {
 	if c.saramaConsumer == nil {
-		print("creating consumer")
+		Logger.Print("creating consumer")
 
-		consumer, err := sarama.NewConsumer(c.brokers, nil)
+		consumer, err := sarama.NewConsumer(c.brokers, c.saramaConfig())
 		if err != nil {
 			return nil, err
 		}
@@ -46,9 +58,9 @@ func (c *client) consumer() (sarama.Consumer, error) {
 
 func (c *client) syncProducer() (sarama.SyncProducer, error) {
 	if c.saramaSyncProducer == nil {
-		print("creating producer")
+		Logger.Print("creating producer")
 
-		producer, err := sarama.NewSyncProducer(c.brokers, nil)
+		producer, err := sarama.NewSyncProducer(c.brokers, c.saramaConfig())
 		if err != nil {
 			return nil, err
 		}
@@ -83,19 +95,21 @@ func (c *client) Consume(topic string) (<-chan Message, error) {
 	messages := make(chan Message)
 
 	for _, partition := range partitionList {
-		pc, err := consumer.ConsumePartition(topic, partition, 0)
+		pc, err := consumer.ConsumePartition(topic, partition, sarama.OffsetOldest)
 		if err != nil {
 			return nil, err
 		}
 
 		go func(pc sarama.PartitionConsumer, partition int32) {
+			Logger.Printf("intializing consumer for partition %d", partition)
+
 			for message := range pc.Messages() {
-				println("waiting for partition", partition)
+				Logger.Printf("waiting for partition %d", partition)
 				messages <- Message{
 					Value: message.Value,
 					Topic: topic,
 				}
-				println("consumed from partition", partition)
+				Logger.Printf("consumed from partition %d", partition)
 			}
 		}(pc, partition)
 	}
@@ -114,7 +128,7 @@ func (c *client) SyncProduce(message Message) (partition int32, offset int64, er
 		Value: sarama.ByteEncoder(message.Value),
 	}
 
-	println("producing...")
+	Logger.Print("producing message to topic %s", message.Topic)
 
 	return producer.SendMessage(&producerMessage)
 }
