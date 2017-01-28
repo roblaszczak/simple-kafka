@@ -60,7 +60,11 @@ func (c *client) syncProducer() (sarama.SyncProducer, error) {
 	if c.saramaSyncProducer == nil {
 		Logger.Print("creating producer")
 
-		producer, err := sarama.NewSyncProducer(c.brokers, c.saramaConfig())
+		config := c.saramaConfig()
+		config.Producer.Return.Successes = true
+		config.Producer.Return.Errors = true
+
+		producer, err := sarama.NewSyncProducer(c.brokers, config)
 		if err != nil {
 			return nil, err
 		}
