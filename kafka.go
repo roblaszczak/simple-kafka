@@ -7,20 +7,40 @@ import (
 )
 
 var (
+	// Logger is logger used by simple-kafka.
+	// Logger can be replaced by any other logger.
 	Logger = log.New(ioutil.Discard, "[simple-kafka] ", log.LstdFlags)
 )
 
 // Message represents message received from Kafka
 type Message struct {
-	Topic string
-	Value []byte
+	Topic  string
+	Value  []byte
+	Offset int64
+	Partition int32
 }
+
+const (
+	// OffsetLastest can be used to consume only lastests messages.
+	OffsetLastest  int64 = -1
+	// OffsetEarliest can be used to consume all messages.
+ 	OffsetEarliest int64 = -2
+)
 
 // Client is Kafka client.
 type Client interface {
+	// Topics returns list of existing topics.
 	Topics() ([]string, error)
-	Consume(topic string) (<-chan Message, error)
+
+	// Consume creates channel with provides messages from provided topic.
+	Consume(topic string, offset int64) (<-chan Message, error)
+
+	// SyncProduce produces provided message.
 	SyncProduce(Message) (partition int32, offset int64, err error)
+
+	// LastOffsets returns last offsets for all partitions of provided topic.
+	LastOffsets(topic string) (map[int32]int64, error)
+
 	// AsyncProduce(Message) error - todo
 }
 
@@ -32,8 +52,8 @@ func NewClient(brokers []string) (Client, error) {
 
 type client struct {
 	brokers            []string
-	saramaConsumer     sarama.Consumer
 	saramaSyncProducer sarama.SyncProducer
+	saramaClient       sarama.Client
 }
 
 func (c client) saramaConfig() (*sarama.Config) {
@@ -42,18 +62,14 @@ func (c client) saramaConfig() (*sarama.Config) {
 }
 
 func (c *client) consumer() (sarama.Consumer, error) {
-	if c.saramaConsumer == nil {
-		Logger.Print("creating consumer")
+	Logger.Print("creating consumer")
 
-		consumer, err := sarama.NewConsumer(c.brokers, c.saramaConfig())
-		if err != nil {
-			return nil, err
-		}
-
-		c.saramaConsumer = consumer
+	consumer, err := sarama.NewConsumer(c.brokers, c.saramaConfig())
+	if err != nil {
+		return nil, err
 	}
 
-	return c.saramaConsumer, nil
+	return consumer, nil
 }
 
 func (c *client) syncProducer() (sarama.SyncProducer, error) {
@@ -75,6 +91,23 @@ func (c *client) syncProducer() (sarama.SyncProducer, error) {
 	return c.saramaSyncProducer, nil
 }
 
+func (c *client) client() (sarama.Client, error) {
+	if c.saramaClient == nil || c.saramaClient.Closed() {
+		Logger.Print("creating client")
+
+		config := c.saramaConfig()
+
+		client, err := sarama.NewClient(c.brokers, config)
+		if err != nil {
+			return nil, err
+		}
+
+		c.saramaClient = client
+	}
+
+	return c.saramaClient, nil
+}
+
 func (c client) Topics() ([]string, error) {
 	consumer, err := c.consumer()
 
@@ -85,8 +118,9 @@ func (c client) Topics() ([]string, error) {
 	return consumer.Topics()
 }
 
-func (c *client) Consume(topic string) (<-chan Message, error) {
+func (c *client) Consume(topic string, offset int64) (<-chan Message, error) {
 	consumer, err := c.consumer()
+
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +133,7 @@ func (c *client) Consume(topic string) (<-chan Message, error) {
 	messages := make(chan Message)
 
 	for _, partition := range partitionList {
-		pc, err := consumer.ConsumePartition(topic, partition, sarama.OffsetOldest)
+		pc, err := consumer.ConsumePartition(topic, partition, offset)
 		if err != nil {
 			return nil, err
 		}
@@ -112,6 +146,8 @@ func (c *client) Consume(topic string) (<-chan Message, error) {
 				messages <- Message{
 					Value: message.Value,
 					Topic: topic,
+					Offset: message.Offset,
+					Partition: partition,
 				}
 				Logger.Printf("consumed from partition %d", partition)
 			}
@@ -119,6 +155,33 @@ func (c *client) Consume(topic string) (<-chan Message, error) {
 	}
 
 	return messages, nil
+}
+
+func (c *client) LastOffsets(topic string) (map[int32]int64, error) {
+	client, err := c.client()
+
+	if err != nil {
+		return map[int32]int64{}, err
+	}
+
+	partitions, err := client.Partitions(topic)
+	if err != nil {
+		return map[int32]int64{}, err
+	}
+
+	offsets := make(map[int32]int64, len(partitions))
+
+	for _, partition := range partitions {
+		nextOffset, err := client.GetOffset(topic, partition, sarama.OffsetNewest)
+		if err != nil {
+			return map[int32]int64{}, err
+		}
+
+		// kafka returns the next offset, we want lastest
+		offsets[partition] = nextOffset - 1
+	}
+
+	return offsets, nil
 }
 
 func (c *client) SyncProduce(message Message) (partition int32, offset int64, err error) {
@@ -132,7 +195,7 @@ func (c *client) SyncProduce(message Message) (partition int32, offset int64, er
 		Value: sarama.ByteEncoder(message.Value),
 	}
 
-	Logger.Print("producing message to topic %s", message.Topic)
+	Logger.Printf("producing message to topic %s", message.Topic)
 
 	return producer.SendMessage(&producerMessage)
 }

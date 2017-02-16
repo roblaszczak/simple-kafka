@@ -42,7 +42,7 @@ func TestClient_Consume(t *testing.T) {
 		)
 	}
 
-	consumedMessagesCh, err := client.Consume(topicName)
+	consumedMessagesCh, err := client.Consume(topicName, kafka.OffsetEarliest)
 	if err != nil {
 		t.Error("client.Consume() returned error:", err)
 	}
@@ -50,25 +50,30 @@ func TestClient_Consume(t *testing.T) {
 	consumedMessages := make([]kafka.Message, messagesCount)
 	for i := 0; i < messagesCount; i++ {
 		consumedMessages[i] = <-consumedMessagesCh
-		fmt.Println(i, string(consumedMessages[i].Value))
 	}
 
 	for _, producedMessage := range producedMessages {
-		found := false
-		for _, consumedMessage := range consumedMessages {
-			if messagesEqual(producedMessage, consumedMessage) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("message not found", spew.Sdump(producedMessage))
-		}
+		assertMessages(consumedMessages, producedMessage, t)
 	}
 }
-func messagesEqual(msg1 kafka.Message, msg2 kafka.Message) bool {
-	return reflect.DeepEqual(msg1, msg2)
+
+func assertMessages(consumedMessages []kafka.Message, producedMessage kafka.Message, t *testing.T) {
+	found := false
+	for _, consumedMessage := range consumedMessages {
+		if messagesEqual(producedMessage, consumedMessage) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("message not found", spew.Sdump(producedMessage))
+	}
 }
+
+func messagesEqual(msg1 kafka.Message, msg2 kafka.Message) bool {
+	return reflect.DeepEqual(msg1.Value, msg2.Value) && msg1.Topic == msg2.Topic
+}
+
 func generateRandomMessages(messagesCount int, topicName string) []kafka.Message {
 	producedMessages := make([]kafka.Message, messagesCount)
 
@@ -113,10 +118,40 @@ func TestClient_Topics(t *testing.T) {
 	}
 
 	for _, addedTopic := range addedTopics {
-		foundCount := sort.SearchStrings(kafkaTopics, addedTopic)
+		foundIndex := sort.SearchStrings(kafkaTopics, addedTopic)
 
-		if foundCount == 0 {
+		if foundIndex < len(kafkaTopics) && kafkaTopics[foundIndex] == addedTopic {
 			t.Errorf("topic %s not found in %s", addedTopic, kafkaTopics)
 		}
+	}
+}
+
+func TestClient_LastOffsets(t *testing.T) {
+	client, err := createClient()
+	if err != nil {
+		t.Error("cannot create kafka client", err)
+	}
+
+	topicName := generateRandomTopic()
+
+	messagesCount := 100
+	producedMessages := generateRandomMessages(messagesCount, topicName)
+	lastOffsets := map[int32]int64{}
+
+	for _, message := range producedMessages {
+		partition, offset, err := client.SyncProduce(message)
+		if err != nil {
+			t.Error("error during adding test message", err)
+		}
+		lastOffsets[partition] = offset
+	}
+
+	clientLastOffsets, err := client.LastOffsets(topicName)
+	if err != nil {
+		t.Error("error during getting last offsets", err)
+	}
+
+	if !reflect.DeepEqual(lastOffsets, clientLastOffsets) {
+		t.Fatalf("offsets are not equall, expected: %s, returned: %s", spew.Sdump(lastOffsets), spew.Sdump(clientLastOffsets))
 	}
 }
